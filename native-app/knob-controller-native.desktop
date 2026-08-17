@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=KNOBController Native
+Comment=Native visual knob controller for volume or scroll mode
+Exec=/usr/local/bin/knob-controller-native-open
+Icon=input-dialpad
+Terminal=false
+Categories=Settings;Utility;

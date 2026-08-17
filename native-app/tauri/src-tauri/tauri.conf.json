@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "KNOBController",
+  "version": "0.1.0",
+  "identifier": "art.edgemarketing.knobcontroller",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "KNOBController",
+        "width": 980,
+        "height": 600,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "shortDescription": "Visual knob controller",
+    "longDescription": "Configure a hardware knob as volume or scroll with a visual native interface."
+  }
+}
