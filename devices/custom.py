@@ -21,12 +21,12 @@ class CalibratedDeviceProfile:
     product_id: str
     left_type: int
     left_code: int
-    left_value: int
     right_type: int
     right_code: int
-    right_value: int
     press_type: int
     press_code: int
+    left_value: int = 1
+    right_value: int = 1
     press_value: int = 1
     enabled: bool = True
 
@@ -64,10 +64,9 @@ class CalibratedDeviceProfile:
         left_type = int(left.get("type", -1))
         right_type = int(right.get("type", -1))
         press_type = int(press.get("type", -1))
-        # Backward compatibility with v0.7 stores where value was not persisted.
-        # EV_KEY calibration always learned key-down (=1). REL requires an
-        # explicit signed value and therefore old REL diagnostic profiles stay
-        # unsupported until recalibrated instead of guessing direction.
+        # v0.7 did not persist event values. Key events safely default to
+        # key-down (=1). Old REL captures cannot infer direction and therefore
+        # remain unsupported until the device is recalibrated in v0.8.
         left_value = int(left.get("value", 1 if left_type == 1 else 0))
         right_value = int(right.get("value", 1 if right_type == 1 else 0))
         press_value = int(press.get("value", 1 if press_type == 1 else 0))
@@ -79,12 +78,12 @@ class CalibratedDeviceProfile:
             product_id=str(data.get("product_id") or "").lower(),
             left_type=left_type,
             left_code=int(left.get("code", -1)),
-            left_value=left_value,
             right_type=right_type,
             right_code=int(right.get("code", -1)),
-            right_value=right_value,
             press_type=press_type,
             press_code=int(press.get("code", -1)),
+            left_value=left_value,
+            right_value=right_value,
             press_value=press_value,
             enabled=bool(data.get("enabled", True)),
         )
@@ -143,10 +142,7 @@ class CalibratedAdapter(DeviceAdapter):
                     continue
                 for event_path in block.event_paths:
                     capabilities = ["rotate", "press", "calibrated"]
-                    if profile.left_type == profile.right_type == 2:
-                        capabilities.append("ev_rel")
-                    else:
-                        capabilities.append("ev_key")
+                    capabilities.append("ev_rel" if profile.left_type == profile.right_type == 2 else "ev_key")
                     candidates.append(DeviceCandidate(
                         adapter_id=self.id,
                         id=profile.id,
