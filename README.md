@@ -4,14 +4,15 @@
 
 KNOBController is an open-source control layer for physical rotary inputs. It turns a keyboard knob into a programmable control surface instead of leaving it locked to one manufacturer-defined function.
 
-The current production target is Linux. The tested MEETION knob can control vertical scroll, horizontal scroll, system volume, zoom, tab switching and configurable button gestures. v0.4 adds automatic per-application profiles on X11.
+The current production target is Linux. The project now supports a tested MEETION rotary interface, modifier layers, per-application profiles, a visual profile editor, device discovery, persistent calibrated adapters, and v0.8 runtime decoding for both `EV_KEY` and `EV_REL` rotation patterns.
 
 ## What works now
 
 ### Rotary control
 
-- Rotate left / right → vertical scroll.
-- Rotate left / right → volume.
+- Vertical scroll.
+- Horizontal scroll.
+- System volume.
 - `Ctrl + Knob` → zoom by default.
 - `Shift + Knob` → horizontal scroll by default.
 - `Alt + Knob` → tab switching by default.
@@ -24,9 +25,9 @@ The current production target is Linux. The tested MEETION knob can control vert
 - Long press.
 - Mappings: Mute, Enter, Esc, Tab, Space, Play/Pause or No-op.
 
-### Per-app profiles — v0.4
+### Per-app profiles
 
-An unprivileged desktop profile agent now detects the foreground X11 application and applies the corresponding KNOBController profile automatically.
+An unprivileged desktop profile agent detects the foreground X11 application and applies the corresponding profile automatically.
 
 Starter profiles:
 
@@ -39,33 +40,7 @@ Design
 IDE
 ```
 
-Example behavior:
-
-```text
-Firefox / Chromium
-  Knob          → Scroll
-  Ctrl + Knob   → Zoom
-  Shift + Knob  → Horizontal scroll
-  Alt + Knob    → Tabs
-
-Spotify / VLC / mpv
-  Knob          → Volume
-  Click         → Play / Pause
-  Double Click  → Mute
-
-Video editor
-  Knob          → Scroll / navigation
-  Ctrl + Knob   → Zoom
-  Shift + Knob  → Horizontal navigation
-  Click         → Space
-
-IDE
-  Knob          → Scroll
-  Ctrl + Knob   → Zoom
-  Alt + Knob    → Tabs
-```
-
-Profiles live in:
+Profiles can be created and edited visually from the Tauri Profile Editor. The runtime configuration lives in:
 
 ```text
 ~/.config/knob-controller/profiles.json
@@ -73,13 +48,56 @@ Profiles live in:
 
 See [`docs/PROFILES.md`](docs/PROFILES.md).
 
+### Device discovery and calibration
+
+The Linux daemon now discovers rotary candidates through a device-adapter registry instead of hard-coding one event node.
+
+Built-in adapter types:
+
+```text
+meetion
+calibrated
+generic-hid candidate scanner
+```
+
+Unknown candidates are not auto-grabbed. They can be learned through the visual Device Calibration flow:
+
+```text
+select candidate
+    ↓
+TURN LEFT
+    ↓
+TURN RIGHT
+    ↓
+PRESS KNOB
+    ↓
+validate event map
+    ↓
+save calibrated adapter
+```
+
+v0.8 supports two learned runtime layouts:
+
+```text
+EV_KEY left/right + EV_KEY press
+EV_REL left/right + EV_KEY press
+```
+
+For relative axes, KNOBController persists the learned event value/sign so accelerated values still resolve to the correct direction.
+
+Calibrated device profiles live in:
+
+```text
+/etc/knob-controller/devices.json
+```
+
+See [`docs/DEVICES.md`](docs/DEVICES.md) and [`docs/CALIBRATION.md`](docs/CALIBRATION.md).
+
 ## Architecture
 
 KNOBController separates privileged hardware access from desktop context.
 
 ```text
-                    KNOBController v0.4
-
 Desktop session                         Hardware layer
 ────────────────                        ──────────────
 foreground app
@@ -87,6 +105,10 @@ foreground app
 Profile Agent (user)
       ↓ localhost API
       ├──────────────────────────────→ Linux daemon
+      │                                  ↓
+      │                             Device Registry
+      │                                  ↓
+      │                           Runtime Event Decoder
       │                                  ↓
       │                              Gesture Engine
       │                                  ↓
@@ -99,12 +121,14 @@ Profile Agent (user)
       └──────────────────────────── physical knob
 ```
 
-The product core is still platform-oriented:
+The portable product model remains:
 
 ```text
 physical rotary input
         ↓
 device adapter
+        ↓
+normalized input decoder
         ↓
 gesture engine
         ↓
@@ -128,10 +152,16 @@ Current endpoints include:
 ```text
 GET  /api/status
 GET  /api/profiles
+GET  /api/devices
+GET  /api/calibration
 POST /api/mode
 POST /api/click-map
 POST /api/gesture-map
 POST /api/modifier-map
+POST /api/calibration/start
+POST /api/calibration/arm
+POST /api/calibration/cancel
+POST /api/calibration/save
 GET  /events
 ```
 
@@ -141,13 +171,7 @@ GET  /events
 http://127.0.0.1:8767
 ```
 
-Read-only runtime endpoints:
-
-```text
-GET /api/status
-GET /api/profiles
-GET /events
-```
+The profile agent exposes profile/runtime state and write operations used by the visual editor.
 
 ## Linux session support
 
@@ -161,42 +185,23 @@ Wayland is detected explicitly. Automatic foreground-app switching is not claime
 
 ## Device support
 
-Current tested hardware:
+Confirmed development hardware:
 
-- Evision / MEETION keyboard rotary interface used during development.
+- Evision / MEETION keyboard rotary interface.
 
-The architecture is moving toward device adapters and generic HID discovery. MEETION is the first supported device family, not the intended product boundary.
-
-## Repository map
-
-```text
-.
-├── knob_controller_daemon.py          # v0.3+ Linux hardware daemon
-├── knob_engine.py                     # platform-independent gesture/action engine
-├── linux_backend.py                   # uinput action execution
-├── modifier_input.py                  # Ctrl/Shift/Alt state tracking
-├── app_context.py                     # foreground-app detection + matching
-├── knob-controller-agent.py           # v0.4 unprivileged per-app profile agent
-├── knob-controller.service            # hardware daemon service
-├── knob-controller-agent.service      # systemd user profile-agent service
-├── test_linux_backend.py
-├── test_modifier_layers.py
-├── test_app_context.py
-├── tests/
-│   └── test_knob_engine.py
-├── docs/
-│   └── PROFILES.md
-└── native-app/
-    └── tauri/
-        ├── ui-v2/                     # hardware-inspired desktop UI
-        └── src-tauri/
-```
-
-Legacy v0.x files remain in the repository during migration so existing installations are not silently broken.
+Additional Linux rotary devices can now be surfaced as candidates and, when their evdev layout fits the supported decoder model, calibrated without adding a handwritten adapter.
 
 ## Desktop UI
 
 The Tauri interface is intentionally inspired by physical audio control surfaces rather than generic dashboard UI.
+
+Current windows:
+
+```text
+Main Control Surface
+Profile Editor
+Device Calibration
+```
 
 Product rule:
 
@@ -204,12 +209,47 @@ Product rule:
 2. Future functions are visibly marked as Next/Roadmap.
 3. No fake battery, firmware, haptics or device telemetry is presented.
 
+## Repository map
+
+```text
+.
+├── knob_controller_daemon.py          # proven Linux hardware/action runtime
+├── knob_controller_daemon_v06.py      # adapter-aware discovery layer
+├── knob_controller_daemon_v07.py      # interactive calibration API
+├── knob_controller_daemon_v08.py      # EV_REL runtime + v0.8 integration
+├── knob_engine.py                     # platform-independent gesture/action engine
+├── linux_backend.py                   # uinput action execution
+├── modifier_input.py                  # Ctrl/Shift/Alt state tracking
+├── app_context.py                     # foreground-app detection + matching
+├── knob-controller-agent.py           # unprivileged per-app profile agent
+├── devices/
+│   ├── base.py
+│   ├── registry.py
+│   ├── meetion.py
+│   ├── generic_hid.py
+│   ├── custom.py
+│   ├── calibration.py
+│   └── decoder.py
+├── docs/
+│   ├── PROFILES.md
+│   ├── DEVICES.md
+│   └── CALIBRATION.md
+└── native-app/tauri/
+    ├── ui-v2/
+    │   ├── index.html
+    │   ├── profiles.html
+    │   └── calibration.html
+    └── src-tauri/
+```
+
+Legacy v0.x files remain in the repository during migration so existing installations are not silently broken.
+
 ## Platform direction
 
 ### Linux
 
 ```text
-evdev → KNOBController engine → uinput
+evdev → device decoder → KNOBController engine → uinput
 ```
 
 Current production target.
@@ -236,12 +276,12 @@ The Linux daemon cannot simply be repackaged unchanged for Windows or macOS beca
 
 Major remaining milestones:
 
-- Generic HID / device-adapter discovery.
 - Wayland foreground-app backends.
-- UI editor for creating and ordering profiles without editing JSON.
-- Packaged Linux installer and clean privilege setup.
+- Clean Linux installer and privilege setup.
+- Consolidation of migration wrappers into one production daemon entrypoint.
 - Automatic builds and versioned GitHub Releases.
 - Supported-device matrix.
+- More device-family adapters and calibration fixtures.
 - Windows backend.
 - macOS backend.
 - Screenshots and demo video/GIF.
