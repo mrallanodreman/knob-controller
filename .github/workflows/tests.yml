@@ -27,6 +27,7 @@ jobs:
           python -m py_compile \
             knob_engine.py \
             linux_backend.py \
+            modifier_input.py \
             knob_controller_daemon.py
 
       - name: Run unit tests
