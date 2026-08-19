@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Linux execution backend for KNOBController.
 
-This module translates normalized actions from ``knob_engine`` into Linux
-uinput events. It deliberately contains no gesture/profile policy: the core
-engine decides *what* should happen and this backend only decides *how* Linux
-performs it.
+The backend translates platform-agnostic actions from ``knob_engine`` into
+Linux uinput events. It deliberately contains no gesture/profile policy.
+
+v0.3 adds horizontal scrolling and key-combo actions so modifier layers can
+perform useful contextual controls such as browser zoom and tab switching.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict
+from typing import Callable, Dict, Iterable
 
 from knob_engine import (
+    ACTION_HORIZONTAL_SCROLL,
     ACTION_KEY,
+    ACTION_KEY_COMBO,
     ACTION_NOOP,
     ACTION_SCROLL,
     ACTION_VOLUME,
@@ -24,7 +27,7 @@ from knob_engine import (
 
 @dataclass(frozen=True)
 class LinuxKeyMap:
-    """Named keys supported by the current Linux virtual keyboard."""
+    """Named keys supported by the KNOBController virtual keyboard."""
 
     keys: Dict[str, int]
     volume_up: int
@@ -35,14 +38,12 @@ class LinuxKeyMap:
             raise ValueError(f"unsupported Linux key action: {name}")
         return self.keys[name]
 
+    def resolve_many(self, names: Iterable[str]) -> list[int]:
+        return [self.resolve(str(name)) for name in names]
+
 
 class LinuxActionExecutor:
-    """Execute normalized KNOBController actions through uinput file handles.
-
-    ``emit_key`` and ``emit_scroll`` are injected so this module remains easy
-    to unit-test and does not duplicate the low-level input_event packing code
-    already owned by the daemon.
-    """
+    """Execute normalized KNOBController actions through uinput handles."""
 
     def __init__(
         self,
@@ -52,12 +53,16 @@ class LinuxActionExecutor:
         keymap: LinuxKeyMap,
         emit_key: Callable[[int, int], None],
         emit_scroll: Callable[[int, int], None],
+        emit_horizontal_scroll: Callable[[int, int], None] | None = None,
+        emit_combo: Callable[[int, list[int]], None] | None = None,
     ) -> None:
         self.keyboard_fd = keyboard_fd
         self.mouse_fd = mouse_fd
         self.keymap = keymap
         self.emit_key = emit_key
         self.emit_scroll = emit_scroll
+        self.emit_horizontal_scroll = emit_horizontal_scroll
+        self.emit_combo = emit_combo
 
     def __call__(self, action: Action, gesture: Gesture) -> None:
         if action.type == ACTION_NOOP:
@@ -66,6 +71,13 @@ class LinuxActionExecutor:
         if action.type == ACTION_SCROLL:
             amount = action.amount or gesture.delta or 1
             self.emit_scroll(self.mouse_fd, amount)
+            return
+
+        if action.type == ACTION_HORIZONTAL_SCROLL:
+            if self.emit_horizontal_scroll is None:
+                raise RuntimeError("horizontal scroll emitter is not configured")
+            amount = action.amount or gesture.delta or 1
+            self.emit_horizontal_scroll(self.mouse_fd, amount)
             return
 
         if action.type == ACTION_VOLUME:
@@ -77,6 +89,17 @@ class LinuxActionExecutor:
 
         if action.type == ACTION_KEY:
             self.emit_key(self.keyboard_fd, self.keymap.resolve(str(action.value)))
+            return
+
+        if action.type == ACTION_KEY_COMBO:
+            if self.emit_combo is None:
+                raise RuntimeError("key-combo emitter is not configured")
+            if not isinstance(action.value, (list, tuple)) or not action.value:
+                raise ValueError("key_combo requires a non-empty key list")
+            self.emit_combo(
+                self.keyboard_fd,
+                self.keymap.resolve_many(action.value),
+            )
             return
 
         raise ValueError(f"unsupported action for Linux backend: {action.type}")
