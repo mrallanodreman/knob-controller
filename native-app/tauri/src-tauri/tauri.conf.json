@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "KNOBController",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "identifier": "art.edgemarketing.knobcontroller",
   "build": {
     "frontendDist": "../ui-v2"
@@ -9,11 +9,23 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "KNOBController",
+        "url": "index.html",
         "width": 1440,
         "height": 980,
         "minWidth": 1180,
         "minHeight": 820,
+        "resizable": true
+      },
+      {
+        "label": "profiles",
+        "title": "KNOBController · Profile Editor",
+        "url": "profiles.html",
+        "width": 1180,
+        "height": 800,
+        "minWidth": 920,
+        "minHeight": 650,
         "resizable": true
       }
     ]
@@ -23,6 +35,6 @@
     "targets": "all",
     "category": "Utility",
     "shortDescription": "Programmable control layer for keyboard knobs",
-    "longDescription": "KNOBController turns a supported hardware rotary knob into a programmable control surface with gestures, modifier layers and automatic per-application profiles on supported Linux desktop sessions."
+    "longDescription": "KNOBController turns a supported hardware rotary knob into a programmable control surface with gestures, modifier layers, automatic per-application profiles and a visual profile editor."
   }
 }
