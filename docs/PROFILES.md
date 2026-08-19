@@ -1,107 +1,82 @@
 # Per-application profiles
 
-KNOBController v0.4 adds an unprivileged desktop-session profile agent.
+KNOBController v0.5 includes an unprivileged desktop-session profile agent plus a visual editor.
 
-The hardware daemon continues to run separately and owns evdev/uinput. The profile agent runs as the logged-in desktop user, detects the foreground application, and applies the matching control mapping through the daemon's localhost API.
-
-## Runtime split
+The hardware daemon continues to own evdev/uinput. The profile agent runs as the logged-in desktop user, detects the foreground application, selects the first matching enabled profile, and applies its mapping through the daemon localhost API.
 
 ```text
-Desktop session
-  foreground app
-      ↓
-knob-controller-agent.py
-      ↓  localhost HTTP
-127.0.0.1:8766
-      ↓
-knob_controller_daemon.py
-      ↓
-Action Engine → Linux backend → uinput
+Foreground app
+    ↓
+Profile Agent :8767
+    ↓
+Hardware Daemon :8766
+    ↓
+Gesture Engine → Action Engine → Linux backend → uinput
 ```
 
-The profile agent exposes read-only runtime status on:
+## Visual editor
+
+The Tauri app now ships a dedicated **Profile Editor** window. Normal users no longer need to edit `profiles.json` by hand.
+
+The editor can:
+
+- create profiles;
+- duplicate profiles;
+- edit name and application/title match strings;
+- enable or disable a profile;
+- choose base Scroll or Volume behavior;
+- configure Click, Double Click and Long Press;
+- configure Ctrl, Shift and Alt rotary layers;
+- use the currently focused app as a match rule;
+- move profiles up/down to change matching priority;
+- delete non-global profiles;
+- show the current foreground app and active profile live.
+
+The Global profile is protected from deletion so the system always has a safe fallback.
+
+## Local profile API
+
+Read/runtime endpoints:
 
 ```text
-http://127.0.0.1:8767/api/status
-http://127.0.0.1:8767/api/profiles
-http://127.0.0.1:8767/events
+GET  http://127.0.0.1:8767/api/status
+GET  http://127.0.0.1:8767/api/profiles
+GET  http://127.0.0.1:8767/events
 ```
 
-## Linux support in v0.4
+Editor endpoints:
 
-Automatic foreground-app detection is implemented for X11 using the EWMH `_NET_ACTIVE_WINDOW` hint through `xprop`.
+```text
+POST   /api/profiles
+POST   /api/profiles/{id}
+DELETE /api/profiles/{id}
+POST   /api/profiles/reorder
+POST   /api/profiles/use-current-app
+```
 
-Wayland is detected explicitly, but automatic foreground-app routing is not enabled there yet because compositors intentionally do not expose one universal cross-desktop active-window API. On Wayland the agent falls back to the Global profile instead of guessing.
+All endpoints bind only to `127.0.0.1`.
 
-## Profile configuration
+## Persistent configuration
 
-The agent creates this file on first run:
+The agent stores profiles in:
 
 ```text
 ~/.config/knob-controller/profiles.json
 ```
 
-Example:
-
-```json
-{
-  "schema_version": 1,
-  "profiles": [
-    {
-      "id": "global",
-      "name": "Global",
-      "match": [],
-      "mode": "scroll",
-      "gesture_bindings": {
-        "click": "mute",
-        "double_click": "noop",
-        "long_press": "noop"
-      },
-      "modifier_modes": {
-        "ctrl": "zoom",
-        "shift": "horizontal_scroll",
-        "alt": "tabs"
-      },
-      "enabled": true
-    },
-    {
-      "id": "media",
-      "name": "Media",
-      "match": ["spotify", "vlc", "mpv"],
-      "mode": "volume",
-      "gesture_bindings": {
-        "click": "playpause",
-        "double_click": "mute",
-        "long_press": "noop"
-      },
-      "modifier_modes": {
-        "ctrl": "inherit",
-        "shift": "inherit",
-        "alt": "inherit"
-      },
-      "enabled": true
-    }
-  ]
-}
-```
+v0.5 writes schema version 2. The file remains human-readable, but the visual editor is now the normal configuration path.
 
 ## Matching rules
 
-`match` is a list of case-insensitive substrings. KNOBController tests them against both the X11 `WM_CLASS` value and the active window title.
+`match` contains case-insensitive substrings tested against both the detected application id/class and the active window title. The first enabled matching profile wins. If nothing matches, `global` is used.
 
-The first enabled matching profile wins. If nothing matches, `global` is used.
-
-Keep match strings specific enough to avoid accidental collisions.
-
-## Supported profile actions in v0.4
+## Supported controls
 
 Base mode:
-
 - `scroll`
 - `volume`
 
 Button actions:
-
 - `noop`
 - `mute`
 - `enter`
@@ -111,7 +86,6 @@ Button actions:
 - `playpause`
 
 Modifier modes:
-
 - `inherit`
 - `scroll`
 - `horizontal_scroll`
@@ -119,34 +93,12 @@ Modifier modes:
 - `zoom`
 - `tabs`
 
-## Default profiles
+## Linux foreground-app support
 
-The built-in first-run configuration includes:
+Automatic foreground-app detection currently works on X11 through EWMH `_NET_ACTIVE_WINDOW` using `xprop`.
 
-- Global
-- Browser
-- Media
-- Video Editor
-- Design
-- IDE
-
-These are starter profiles, not hard-coded product restrictions. Users can edit the JSON file and restart the user agent.
+Wayland is detected explicitly but does not pretend to have universal foreground-app support. Until compositor-specific backends are added, Wayland safely falls back to Global.
 
 ## User service
 
-The supplied `knob-controller-agent.service` is intended to be installed as a **systemd user service**, not a system-wide root service.
-
-Typical installation target:
-
-```text
-~/.config/systemd/user/knob-controller-agent.service
-```
-
-Then:
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now knob-controller-agent.service
-```
-
-This separation is intentional: the foreground-window detector belongs to the user's graphical session, while the hardware daemon remains isolated from it.
+`knob-controller-agent.service` is a **systemd user service**. The foreground-window detector belongs to the graphical user session; the privileged hardware daemon remains isolated from desktop context.
