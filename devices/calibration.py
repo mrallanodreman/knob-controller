@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .decoder import EV_KEY, EV_REL, EventSpec, RuntimeEventMap
+
 STEPS = ("left", "right", "press")
 
 
@@ -14,6 +16,9 @@ class CapturedEvent:
 
     def to_json(self) -> dict:
         return {"type": self.ev_type, "code": self.code, "value": self.value}
+
+    def to_spec(self) -> EventSpec:
+        return EventSpec(self.ev_type, self.code, self.value)
 
 
 @dataclass
@@ -44,10 +49,21 @@ class CalibrationSession:
             return False
         if event.ev_type == 0:
             return False
-        # Ignore key releases/repeats while learning. For EV_KEY we capture the
-        # physical press. Non-key events are recorded as-is for diagnostics.
-        if event.ev_type == 1 and event.value != 1:
+
+        # Learn key-down for button/key-style knobs. For relative axes, learn a
+        # non-zero signed movement so runtime can preserve the direction.
+        if event.ev_type == EV_KEY and event.value != 1:
             return False
+        if event.ev_type == EV_REL and event.value == 0:
+            return False
+        if event.ev_type not in (EV_KEY, EV_REL):
+            return False
+
+        # Press must remain a key event: REL axes do not carry press/release
+        # semantics required for click/double-click/long-press recognition.
+        if self.step == "press" and event.ev_type != EV_KEY:
+            return False
+
         self.captures[self.step] = event
         self.armed = False
         idx = STEPS.index(self.step)
@@ -58,10 +74,30 @@ class CalibrationSession:
         return True
 
     @property
+    def runtime_map(self) -> RuntimeEventMap | None:
+        if not self.complete or not all(name in self.captures for name in STEPS):
+            return None
+        return RuntimeEventMap(
+            left=self.captures["left"].to_spec(),
+            right=self.captures["right"].to_spec(),
+            press=self.captures["press"].to_spec(),
+        )
+
+    @property
     def runtime_supported(self) -> bool:
-        if not self.complete:
-            return False
-        return all(self.captures[name].ev_type == 1 for name in STEPS)
+        event_map = self.runtime_map
+        return bool(event_map and event_map.supported)
+
+    @property
+    def decoder_kind(self) -> str:
+        event_map = self.runtime_map
+        if event_map is None:
+            return "pending"
+        if event_map.left.ev_type == event_map.right.ev_type == EV_REL:
+            return "EV_REL+EV_KEY"
+        if event_map.left.ev_type == event_map.right.ev_type == EV_KEY:
+            return "EV_KEY"
+        return "unsupported"
 
     def to_json(self) -> dict:
         return {
@@ -75,6 +111,7 @@ class CalibrationSession:
             "complete": self.complete,
             "cancelled": self.cancelled,
             "runtime_supported": self.runtime_supported,
+            "decoder_kind": self.decoder_kind,
             "captures": {name: event.to_json() for name, event in self.captures.items()},
             "error": self.error,
         }

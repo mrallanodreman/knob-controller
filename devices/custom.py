@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .base import DeviceAdapter, DeviceCandidate
+from .decoder import EventSpec, RuntimeEventMap
 from .linux_input import parse_input_devices
 
 DEFAULT_STORE = Path("/etc/knob-controller/devices.json")
@@ -24,13 +25,22 @@ class CalibratedDeviceProfile:
     right_code: int
     press_type: int
     press_code: int
+    left_value: int = 1
+    right_value: int = 1
+    press_value: int = 1
     enabled: bool = True
 
     @property
+    def runtime_map(self) -> RuntimeEventMap:
+        return RuntimeEventMap(
+            left=EventSpec(self.left_type, self.left_code, self.left_value),
+            right=EventSpec(self.right_type, self.right_code, self.right_value),
+            press=EventSpec(self.press_type, self.press_code, self.press_value),
+        )
+
+    @property
     def runtime_supported(self) -> bool:
-        # v0.7 runtime decoder safely supports key-event knobs. REL-axis
-        # calibration can be recorded later without pretending it is live.
-        return self.left_type == self.right_type == self.press_type == 1
+        return self.runtime_map.supported
 
     def to_json(self) -> dict:
         return {
@@ -39,9 +49,9 @@ class CalibratedDeviceProfile:
             "input_name": self.input_name,
             "vendor_id": self.vendor_id,
             "product_id": self.product_id,
-            "left": {"type": self.left_type, "code": self.left_code},
-            "right": {"type": self.right_type, "code": self.right_code},
-            "press": {"type": self.press_type, "code": self.press_code},
+            "left": {"type": self.left_type, "code": self.left_code, "value": self.left_value},
+            "right": {"type": self.right_type, "code": self.right_code, "value": self.right_value},
+            "press": {"type": self.press_type, "code": self.press_code, "value": self.press_value},
             "enabled": self.enabled,
             "runtime_supported": self.runtime_supported,
         }
@@ -51,18 +61,30 @@ class CalibratedDeviceProfile:
         left = data.get("left") or {}
         right = data.get("right") or {}
         press = data.get("press") or {}
+        left_type = int(left.get("type", -1))
+        right_type = int(right.get("type", -1))
+        press_type = int(press.get("type", -1))
+        # v0.7 did not persist event values. Key events safely default to
+        # key-down (=1). Old REL captures cannot infer direction and therefore
+        # remain unsupported until the device is recalibrated in v0.8.
+        left_value = int(left.get("value", 1 if left_type == 1 else 0))
+        right_value = int(right.get("value", 1 if right_type == 1 else 0))
+        press_value = int(press.get("value", 1 if press_type == 1 else 0))
         return cls(
             id=str(data.get("id") or "").strip(),
             name=str(data.get("name") or data.get("input_name") or "Custom rotary"),
             input_name=str(data.get("input_name") or ""),
             vendor_id=str(data.get("vendor_id") or "").lower(),
             product_id=str(data.get("product_id") or "").lower(),
-            left_type=int(left.get("type", -1)),
+            left_type=left_type,
             left_code=int(left.get("code", -1)),
-            right_type=int(right.get("type", -1)),
+            right_type=right_type,
             right_code=int(right.get("code", -1)),
-            press_type=int(press.get("type", -1)),
+            press_type=press_type,
             press_code=int(press.get("code", -1)),
+            left_value=left_value,
+            right_value=right_value,
+            press_value=press_value,
             enabled=bool(data.get("enabled", True)),
         )
 
@@ -79,7 +101,7 @@ def load_profiles(path: Path = DEFAULT_STORE) -> list[CalibratedDeviceProfile]:
 
 def save_profiles(profiles: list[CalibratedDeviceProfile], path: Path = DEFAULT_STORE) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"schema_version": 1, "devices": [item.to_json() for item in profiles]}
+    payload = {"schema_version": 2, "devices": [item.to_json() for item in profiles]}
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
@@ -119,6 +141,8 @@ class CalibratedAdapter(DeviceAdapter):
                 if profile.product_id and block.product.lower() != profile.product_id:
                     continue
                 for event_path in block.event_paths:
+                    capabilities = ["rotate", "press", "calibrated"]
+                    capabilities.append("ev_rel" if profile.left_type == profile.right_type == 2 else "ev_key")
                     candidates.append(DeviceCandidate(
                         adapter_id=self.id,
                         id=profile.id,
@@ -126,12 +150,18 @@ class CalibratedAdapter(DeviceAdapter):
                         event_path=event_path,
                         vendor_id=block.vendor,
                         product_id=block.product,
-                        capabilities=("rotate", "press", "calibrated"),
+                        capabilities=tuple(capabilities),
                         metadata={
                             "input_name": block.name,
+                            "left_type": str(profile.left_type),
                             "left_code": str(profile.left_code),
+                            "left_value": str(profile.left_value),
+                            "right_type": str(profile.right_type),
                             "right_code": str(profile.right_code),
+                            "right_value": str(profile.right_value),
+                            "press_type": str(profile.press_type),
                             "press_code": str(profile.press_code),
+                            "press_value": str(profile.press_value),
                         },
                     ))
         return candidates
