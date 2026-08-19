@@ -1,47 +1,94 @@
-# Interactive calibration
+# Device calibration
 
-KNOBController v0.7 can learn unknown rotary devices that appear in the v0.6 discovery list.
+KNOBController v0.8 can learn unknown Linux rotary devices from evdev events instead of requiring a handwritten adapter for every keyboard model.
 
-## Flow
+## Supported learned layouts
 
-1. `GET /api/devices` and choose an unknown candidate.
-2. `POST /api/calibration/start` with `device_id`.
-3. Arm `left`, turn the knob left once.
-4. Arm `right`, turn the knob right once.
-5. Arm `press`, press the knob once.
-6. Review `GET /api/calibration`.
-7. `POST /api/calibration/save` with an optional display name.
+Two runtime layouts are accepted:
 
-Example start payload:
-
-```json
-{"device_id":"generic-hid:event9"}
+```text
+EV_KEY rotation
+left  = key code A
+right = key code B
+press = key code C
 ```
 
-Example arm payload:
+or:
 
-```json
-{"step":"left"}
+```text
+EV_REL rotation
+left  = axis code X, learned direction
+right = axis code X, opposite direction
+press = EV_KEY code C
 ```
 
-Example save payload:
+Left and right may also use different relative-axis codes. Rotation events must be non-zero. Press must be `EV_KEY` so the gesture engine can observe press/release and preserve Click, Double Click and Long Press.
 
-```json
-{"name":"Studio keyboard knob"}
-```
+## Visual workflow
 
-Saved device profiles live in:
+The Tauri app includes a dedicated **Device Calibration** window.
+
+1. Rescan candidates.
+2. Select an unknown candidate.
+3. Start calibration.
+4. Arm **TURN LEFT** and rotate exactly one detent.
+5. Arm **TURN RIGHT** and rotate exactly one detent.
+6. Arm **PRESS KNOB** and press once.
+7. Confirm that Runtime Compatible shows **YES**.
+8. Save the device profile.
+
+Each step is armed manually. This is intentional: automatically arming the next step could learn rebound or residual events from the previous movement.
+
+## Persistence
+
+Calibrated devices are stored in:
 
 ```text
 /etc/knob-controller/devices.json
 ```
 
-They are loaded by the `calibrated` adapter during normal discovery.
+The v0.8 store schema persists event `type`, `code`, and learned `value`/direction for each control.
 
-## Safety and current decoder
+Older v0.7 EV_KEY profiles remain compatible. Old diagnostic EV_REL profiles did not persist direction and therefore must be recalibrated rather than guessed.
 
-v0.7 records the raw Linux input event type/code/value for all three steps, but automatic runtime activation is intentionally limited to devices whose left, right and press signals are `EV_KEY` events. This matches the proven MEETION event pattern and allows the existing gesture/action runtime to be reused safely.
+## API
 
-Pure `EV_REL` rotary-axis devices can be observed during calibration, but the profile is marked unsupported by the v0.7 runtime decoder and cannot be saved as live until the REL decoder is added.
+```text
+GET  /api/devices
+GET  /api/calibration
+POST /api/calibration/start
+POST /api/calibration/arm
+POST /api/calibration/cancel
+POST /api/calibration/save
+GET  /events
+```
 
-The active device cannot be calibrated while the hardware daemon has it exclusively grabbed. Calibration is intended for unknown candidates that are not currently selected.
+Calibration state and captured events are also emitted over the existing SSE stream.
+
+## Safety rules
+
+- Generic/unknown candidates are never automatically grabbed for calibration.
+- The currently active grabbed device cannot be calibrated simultaneously.
+- `EV_SYN` and unsupported event types are ignored.
+- Key releases/repeats are ignored while learning key-style rotation.
+- A saved profile is only considered runtime-compatible when its learned map passes decoder validation.
+
+## Runtime path
+
+```text
+physical knob
+    ↓
+evdev
+    ↓
+calibrated EventSpec
+    ↓
+RuntimeEventMap decoder
+    ↓
+GestureEngine
+    ↓
+ActionEngine
+    ↓
+LinuxActionExecutor
+    ↓
+uinput
+```
