@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""KNOBController Linux daemon v0.2.
-
-Headless hardware service for the Tauri/GTK clients.
+"""KNOBController Linux daemon v0.3.
 
 Architecture:
     physical knob -> evdev -> GestureEngine -> ActionEngine -> LinuxActionExecutor -> uinput
+                         ^
+                         └── sibling keyboard evdev nodes track Ctrl/Shift/Alt
 
-The legacy ``knob-controller.py`` remains untouched while this daemon is
-validated. This file is the intended service entry point for the v0.2 engine.
+v0.3 keeps every v0.2 behavior and adds real modifier layers:
+
+- Shift + knob -> horizontal scroll (default)
+- Ctrl + knob  -> zoom (default)
+- Alt + knob   -> tab switching (default, configurable)
+
+Modifier policy lives in the profile; Linux-specific key discovery remains in
+this daemon/backend layer so the core engine stays portable.
 """
 
 from __future__ import annotations
@@ -26,7 +32,9 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from knob_engine import (
+    ACTION_HORIZONTAL_SCROLL,
     ACTION_KEY,
+    ACTION_KEY_COMBO,
     ACTION_NOOP,
     ACTION_SCROLL,
     ACTION_VOLUME,
@@ -40,12 +48,15 @@ from knob_engine import (
     GESTURE_ROTATE_LEFT,
     GESTURE_ROTATE_RIGHT,
     Profile,
+    binding_key,
 )
 from linux_backend import LinuxActionExecutor, LinuxKeyMap
+from modifier_input import ModifierDeviceSet, ModifierState, discover_modifier_devices
 
 HOST = "127.0.0.1"
 PORT = 8766
 CONFIG_PATH = Path("/etc/knob-controller/config.json")
+DEVICE_NAME = "Evision MEETION Keyboard"
 
 EV_SYN = 0
 EV_KEY = 1
@@ -54,6 +65,13 @@ SYN_REPORT = 0
 KEY_VOLUMEDOWN = 114
 KEY_VOLUMEUP = 115
 KEY_KNOB_CLICK = 113
+KEY_LEFTCTRL = 29
+KEY_LEFTSHIFT = 42
+KEY_LEFTALT = 56
+KEY_TAB = 15
+KEY_MINUS = 12
+KEY_EQUAL = 13
+REL_HWHEEL = 6
 REL_WHEEL = 8
 BUS_USB = 0x03
 
@@ -61,9 +79,18 @@ CLICK_KEYS: Dict[str, int] = {
     "mute": 113,
     "enter": 28,
     "esc": 1,
-    "tab": 15,
+    "tab": KEY_TAB,
     "space": 57,
     "playpause": 164,
+}
+
+LINUX_KEYS: Dict[str, int] = {
+    **CLICK_KEYS,
+    "ctrl": KEY_LEFTCTRL,
+    "shift": KEY_LEFTSHIFT,
+    "alt": KEY_LEFTALT,
+    "minus": KEY_MINUS,
+    "equal": KEY_EQUAL,
 }
 
 GESTURE_ACTIONS = {"noop", *CLICK_KEYS.keys()}
@@ -72,12 +99,26 @@ BUTTON_GESTURES = {
     GESTURE_DOUBLE_CLICK,
     GESTURE_LONG_PRESS,
 }
+MODIFIER_LAYERS = ("ctrl", "shift", "alt")
+MODIFIER_MODES = {
+    "inherit",
+    "scroll",
+    "horizontal_scroll",
+    "volume",
+    "zoom",
+    "tabs",
+}
 
 DEFAULT_MODE = "scroll"
 DEFAULT_GESTURE_BINDINGS = {
     GESTURE_CLICK: "mute",
     GESTURE_DOUBLE_CLICK: "noop",
     GESTURE_LONG_PRESS: "noop",
+}
+DEFAULT_MODIFIER_MODES = {
+    "ctrl": "zoom",
+    "shift": "horizontal_scroll",
+    "alt": "tabs",
 }
 
 DOUBLE_CLICK_SECONDS = 0.28
@@ -119,8 +160,11 @@ class State:
         self.lock = threading.RLock()
         self.mode = DEFAULT_MODE
         self.gesture_bindings = dict(DEFAULT_GESTURE_BINDINGS)
+        self.modifier_modes = dict(DEFAULT_MODIFIER_MODES)
         self.device = "not found"
-        self.device_name = "Evision MEETION Keyboard"
+        self.device_name = DEVICE_NAME
+        self.modifier_devices: list[str] = []
+        self.active_modifiers: tuple[str, ...] = ()
         self.clients = []
         self.running = True
         self.connected = False
@@ -129,7 +173,6 @@ class State:
 
     @property
     def click_key(self) -> str:
-        """Compatibility property for existing clients."""
         return self.gesture_bindings[GESTURE_CLICK]
 
     def load(self) -> None:
@@ -148,7 +191,6 @@ class State:
         if mode in {"scroll", "volume"}:
             self.mode = mode
 
-        # Backward compatibility with the original config schema.
         legacy_click = data.get("click_key")
         if legacy_click in CLICK_KEYS:
             self.gesture_bindings[GESTURE_CLICK] = legacy_click
@@ -160,37 +202,57 @@ class State:
                 if action in GESTURE_ACTIONS:
                     self.gesture_bindings[gesture] = action
 
+        modifier_modes = data.get("modifier_modes", {})
+        if isinstance(modifier_modes, dict):
+            for modifier in MODIFIER_LAYERS:
+                mode_name = modifier_modes.get(modifier)
+                if mode_name in MODIFIER_MODES:
+                    self.modifier_modes[modifier] = mode_name
+
         self.save()
 
     def save(self) -> None:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "schema_version": 2,
+            "schema_version": 3,
             "mode": self.mode,
-            # Keep click_key during the migration window for old clients.
             "click_key": self.gesture_bindings[GESTURE_CLICK],
             "gesture_bindings": dict(self.gesture_bindings),
+            "modifier_modes": dict(self.modifier_modes),
         }
         tmp = CONFIG_PATH.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, CONFIG_PATH)
 
-    def build_profile(self) -> Profile:
-        rotate_right = (
-            Action(ACTION_SCROLL, amount=1)
-            if self.mode == "scroll"
-            else Action(ACTION_VOLUME, amount=1)
-        )
-        rotate_left = (
-            Action(ACTION_SCROLL, amount=-1)
-            if self.mode == "scroll"
-            else Action(ACTION_VOLUME, amount=-1)
-        )
+    def _rotation_pair(self, mode_name: str) -> tuple[Action, Action]:
+        if mode_name == "scroll":
+            return Action(ACTION_SCROLL, amount=-1), Action(ACTION_SCROLL, amount=1)
+        if mode_name == "horizontal_scroll":
+            return (
+                Action(ACTION_HORIZONTAL_SCROLL, amount=-1),
+                Action(ACTION_HORIZONTAL_SCROLL, amount=1),
+            )
+        if mode_name == "volume":
+            return Action(ACTION_VOLUME, amount=-1), Action(ACTION_VOLUME, amount=1)
+        if mode_name == "zoom":
+            return (
+                Action(ACTION_KEY_COMBO, value=["ctrl", "minus"]),
+                Action(ACTION_KEY_COMBO, value=["ctrl", "equal"]),
+            )
+        if mode_name == "tabs":
+            return (
+                Action(ACTION_KEY_COMBO, value=["ctrl", "shift", "tab"]),
+                Action(ACTION_KEY_COMBO, value=["ctrl", "tab"]),
+            )
+        raise ValueError(f"unsupported rotation mode: {mode_name}")
 
+    def build_profile(self) -> Profile:
+        left, right = self._rotation_pair(self.mode)
         bindings = {
-            GESTURE_ROTATE_RIGHT: rotate_right,
-            GESTURE_ROTATE_LEFT: rotate_left,
+            GESTURE_ROTATE_LEFT: left,
+            GESTURE_ROTATE_RIGHT: right,
         }
+
         for gesture, action_name in self.gesture_bindings.items():
             bindings[gesture] = (
                 Action(ACTION_NOOP)
@@ -198,11 +260,14 @@ class State:
                 else Action(ACTION_KEY, value=action_name)
             )
 
-        return Profile(
-            id="global",
-            name="Global Default",
-            bindings=bindings,
-        )
+        for modifier, mode_name in self.modifier_modes.items():
+            if mode_name == "inherit":
+                continue
+            mod_left, mod_right = self._rotation_pair(mode_name)
+            bindings[binding_key(GESTURE_ROTATE_LEFT, [modifier])] = mod_left
+            bindings[binding_key(GESTURE_ROTATE_RIGHT, [modifier])] = mod_right
+
+        return Profile(id="global", name="Global Default", bindings=bindings)
 
     def refresh_profile(self) -> None:
         with self.lock:
@@ -246,11 +311,53 @@ class State:
         if gesture == GESTURE_CLICK:
             self.publish({"type": "click_key", "click_key": action_name})
 
+    def set_modifier_mode(self, modifier: str, mode_name: str) -> None:
+        modifier = str(modifier).lower()
+        if modifier not in MODIFIER_LAYERS:
+            raise ValueError("invalid modifier")
+        if mode_name not in MODIFIER_MODES:
+            raise ValueError("invalid modifier mode")
+        with self.lock:
+            self.modifier_modes[modifier] = mode_name
+            self.save()
+            self.refresh_profile()
+        self.publish(
+            {
+                "type": "modifier_binding",
+                "modifier": modifier,
+                "mode": mode_name,
+                "modifier_modes": dict(self.modifier_modes),
+            }
+        )
+
     def set_click_key(self, click_key: str) -> None:
-        """Compatibility endpoint used by the existing UI."""
         if click_key not in CLICK_KEYS:
             raise ValueError("invalid click_key")
         self.set_gesture_action(GESTURE_CLICK, click_key)
+
+    def set_modifier_runtime_state(
+        self,
+        *,
+        devices: Optional[list[str]] = None,
+        active: Optional[tuple[str, ...]] = None,
+    ) -> None:
+        changed = False
+        with self.lock:
+            if devices is not None and devices != self.modifier_devices:
+                self.modifier_devices = list(devices)
+                changed = True
+            if active is not None and active != self.active_modifiers:
+                self.active_modifiers = tuple(active)
+                changed = True
+        if changed:
+            self.publish(
+                {
+                    "type": "modifiers",
+                    "active": list(self.active_modifiers),
+                    "devices": list(self.modifier_devices),
+                    "available": bool(self.modifier_devices),
+                }
+            )
 
     def publish(self, item) -> None:
         dead = []
@@ -269,8 +376,10 @@ class State:
 
     def status(self) -> dict:
         with self.lock:
+            modifiers_available = bool(self.modifier_devices)
             return {
-                "schema_version": 2,
+                "schema_version": 3,
+                "version": "0.3.0",
                 "mode": self.mode,
                 "device": self.device,
                 "device_name": self.device_name,
@@ -280,12 +389,19 @@ class State:
                 "click_keys": list(CLICK_KEYS.keys()),
                 "gesture_bindings": dict(self.gesture_bindings),
                 "gesture_actions": sorted(GESTURE_ACTIONS),
+                "modifier_modes": dict(self.modifier_modes),
+                "modifier_mode_options": sorted(MODIFIER_MODES),
+                "modifier_devices": list(self.modifier_devices),
+                "active_modifiers": list(self.active_modifiers),
                 "capabilities": {
                     "rotate": True,
                     "click": True,
                     "double_click": True,
                     "long_press": True,
-                    "modifiers": False,
+                    "modifiers": modifiers_available,
+                    "horizontal_scroll": True,
+                    "zoom_layer": modifiers_available,
+                    "tab_layer": modifiers_available,
                     "profiles": False,
                     "generic_hid": False,
                 },
@@ -302,7 +418,7 @@ state = State()
 def resolve_source() -> str:
     data = Path("/proc/bus/input/devices").read_text(encoding="utf-8")
     for block in data.strip().split("\n\n"):
-        if 'Name="Evision MEETION Keyboard"' not in block:
+        if f'Name="{DEVICE_NAME}"' not in block:
             continue
         if "REL=1040" not in block:
             continue
@@ -328,6 +444,17 @@ def emit_key(fd: int, key: int) -> None:
     write_event(fd, EV_SYN, SYN_REPORT, 0)
 
 
+def emit_combo(fd: int, keys: list[int]) -> None:
+    if not keys:
+        return
+    for key in keys:
+        write_event(fd, EV_KEY, key, 1)
+    write_event(fd, EV_SYN, SYN_REPORT, 0)
+    for key in reversed(keys):
+        write_event(fd, EV_KEY, key, 0)
+    write_event(fd, EV_SYN, SYN_REPORT, 0)
+
+
 def emit_scroll(fd: int, amount: int) -> None:
     if amount == 0:
         return
@@ -335,17 +462,25 @@ def emit_scroll(fd: int, amount: int) -> None:
     write_event(fd, EV_SYN, SYN_REPORT, 0)
 
 
+def emit_horizontal_scroll(fd: int, amount: int) -> None:
+    if amount == 0:
+        return
+    write_event(fd, EV_REL, REL_HWHEEL, amount)
+    write_event(fd, EV_SYN, SYN_REPORT, 0)
+
+
 def create_uinput():
     mouse = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
     fcntl.ioctl(mouse, UI_SET_EVBIT, EV_REL)
     fcntl.ioctl(mouse, UI_SET_RELBIT, REL_WHEEL)
+    fcntl.ioctl(mouse, UI_SET_RELBIT, REL_HWHEEL)
     mouse_dev = struct.pack(
         "80sHHHHi" + "i" * 64 * 4,
-        b"KNOBController scroll",
+        b"KNOBController pointer",
         BUS_USB,
         0x320F,
         0x5055,
-        2,
+        3,
         0,
         *([0] * 64 * 4),
     )
@@ -356,7 +491,7 @@ def create_uinput():
     fcntl.ioctl(keyboard, UI_SET_EVBIT, EV_KEY)
     fcntl.ioctl(keyboard, UI_SET_KEYBIT, KEY_VOLUMEUP)
     fcntl.ioctl(keyboard, UI_SET_KEYBIT, KEY_VOLUMEDOWN)
-    for code in set(CLICK_KEYS.values()):
+    for code in set(LINUX_KEYS.values()):
         fcntl.ioctl(keyboard, UI_SET_KEYBIT, code)
     keyboard_dev = struct.pack(
         "80sHHHHi" + "i" * 64 * 4,
@@ -364,7 +499,7 @@ def create_uinput():
         BUS_USB,
         0x320F,
         0x5055,
-        2,
+        3,
         0,
         *([0] * 64 * 4),
     )
@@ -379,6 +514,7 @@ def publish_gesture(gesture: Gesture, action: Action) -> None:
         "gesture": gesture.name,
         "delta": gesture.delta,
         "modifiers": list(gesture.modifiers),
+        "binding_key": gesture.binding_key,
         "action": {
             "type": action.type,
             "value": action.value,
@@ -389,13 +525,14 @@ def publish_gesture(gesture: Gesture, action: Action) -> None:
         payload["metadata"] = dict(gesture.metadata)
     state.publish(payload)
 
-    # Keep legacy live UI events working.
     if gesture.name in {GESTURE_ROTATE_LEFT, GESTURE_ROTATE_RIGHT}:
         state.publish(
             {
                 "type": "turn",
                 "delta": gesture.delta,
                 "mode": state.mode,
+                "modifiers": list(gesture.modifiers),
+                "action": action.type,
             }
         )
     elif gesture.name in BUTTON_GESTURES:
@@ -403,15 +540,26 @@ def publish_gesture(gesture: Gesture, action: Action) -> None:
             {
                 "type": gesture.name,
                 "action": action.value if action.type == ACTION_KEY else "noop",
+                "modifiers": list(gesture.modifiers),
             }
         )
         if gesture.name == GESTURE_CLICK:
-            state.publish(
-                {
-                    "type": "click",
-                    "click_key": state.click_key,
-                }
-            )
+            state.publish({"type": "click", "click_key": state.click_key})
+
+
+def process_modifier_fd(fd: int, modifier_state: ModifierState) -> None:
+    try:
+        data = os.read(fd, EVENT_SIZE * 64)
+    except BlockingIOError:
+        return
+    usable = len(data) // EVENT_SIZE * EVENT_SIZE
+    for idx in range(0, usable, EVENT_SIZE):
+        _sec, _usec, ev_type, code, value = struct.unpack(
+            EVENT,
+            data[idx : idx + EVENT_SIZE],
+        )
+        if ev_type == EV_KEY:
+            modifier_state.update(code, value)
 
 
 def knob_loop() -> None:
@@ -419,6 +567,8 @@ def knob_loop() -> None:
     mouse = None
     keyboard = None
     gesture_engine: Optional[GestureEngine] = None
+    modifier_devices: Optional[ModifierDeviceSet] = None
+    modifier_state = ModifierState()
 
     while state.running:
         try:
@@ -429,16 +579,29 @@ def knob_loop() -> None:
             mouse, keyboard = create_uinput()
             fcntl.ioctl(source, EVIOCGRAB, 1)
 
+            modifier_paths = discover_modifier_devices(
+                device_name=DEVICE_NAME,
+                exclude_path=source_path,
+            )
+            modifier_devices = ModifierDeviceSet(modifier_paths)
+            modifier_devices.open()
+            state.set_modifier_runtime_state(
+                devices=list(modifier_devices.opened_paths),
+                active=(),
+            )
+
             linux_executor = LinuxActionExecutor(
                 keyboard_fd=keyboard,
                 mouse_fd=mouse,
                 keymap=LinuxKeyMap(
-                    keys=CLICK_KEYS,
+                    keys=LINUX_KEYS,
                     volume_up=KEY_VOLUMEUP,
                     volume_down=KEY_VOLUMEDOWN,
                 ),
                 emit_key=emit_key,
                 emit_scroll=emit_scroll,
+                emit_horizontal_scroll=emit_horizontal_scroll,
+                emit_combo=emit_combo,
             )
             action_engine = ActionEngine(linux_executor)
             state.attach_action_engine(action_engine)
@@ -460,42 +623,52 @@ def knob_loop() -> None:
                     "connected": True,
                     "device": source_path,
                     "device_name": state.device_name,
+                    "modifier_devices": list(modifier_devices.opened_paths),
                 }
             )
-            print(f"KNOBController v0.2 active: {source_path}", flush=True)
+            print(
+                f"KNOBController v0.3 active: {source_path}; "
+                f"modifier nodes={len(modifier_devices.fds)}",
+                flush=True,
+            )
 
             while state.running:
-                ready, _, _ = select.select([source], [], [], 0.5)
+                watched = [source, *modifier_devices.fds]
+                ready, _, _ = select.select(watched, [], [], 0.5)
                 if not ready:
                     continue
 
-                data = os.read(source, EVENT_SIZE * 64)
-                usable = len(data) // EVENT_SIZE * EVENT_SIZE
-                for idx in range(0, usable, EVENT_SIZE):
-                    _sec, _usec, ev_type, code, value = struct.unpack(
-                        EVENT,
-                        data[idx : idx + EVENT_SIZE],
-                    )
-                    if ev_type != EV_KEY:
+                for ready_fd in ready:
+                    if ready_fd != source:
+                        process_modifier_fd(ready_fd, modifier_state)
+                        active = modifier_state.current()
+                        state.set_modifier_runtime_state(active=active)
                         continue
 
-                    if code == KEY_KNOB_CLICK:
-                        if value == 1:
-                            gesture_engine.button_press()
-                        elif value == 0:
-                            gesture_engine.button_release()
-                        # Ignore autorepeat value=2 for the knob button.
-                        continue
+                    data = os.read(source, EVENT_SIZE * 64)
+                    usable = len(data) // EVENT_SIZE * EVENT_SIZE
+                    for idx in range(0, usable, EVENT_SIZE):
+                        _sec, _usec, ev_type, code, value = struct.unpack(
+                            EVENT,
+                            data[idx : idx + EVENT_SIZE],
+                        )
+                        if ev_type != EV_KEY:
+                            continue
 
-                    # Rotary directions arrive as key presses. Releases are
-                    # irrelevant because each press already represents one
-                    # physical detent/tick.
-                    if value != 1:
-                        continue
-                    if code == KEY_VOLUMEUP:
-                        gesture_engine.rotate(1)
-                    elif code == KEY_VOLUMEDOWN:
-                        gesture_engine.rotate(-1)
+                        modifiers = modifier_state.current()
+                        if code == KEY_KNOB_CLICK:
+                            if value == 1:
+                                gesture_engine.button_press(modifiers)
+                            elif value == 0:
+                                gesture_engine.button_release(modifiers)
+                            continue
+
+                        if value != 1:
+                            continue
+                        if code == KEY_VOLUMEUP:
+                            gesture_engine.rotate(1, modifiers)
+                        elif code == KEY_VOLUMEDOWN:
+                            gesture_engine.rotate(-1, modifiers)
 
         except Exception as exc:
             state.connected = False
@@ -512,9 +685,15 @@ def knob_loop() -> None:
         finally:
             state.connected = False
             state.detach_action_engine()
+            modifier_state.clear()
+            state.set_modifier_runtime_state(devices=[], active=())
+
             if gesture_engine is not None:
                 gesture_engine.close()
                 gesture_engine = None
+            if modifier_devices is not None:
+                modifier_devices.close()
+                modifier_devices = None
 
             for fd, destroy in [(source, False), (mouse, True), (keyboard, True)]:
                 if fd is None:
@@ -589,10 +768,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("access-control-allow-origin", "*")
             self.end_headers()
             try:
-                initial = {
-                    "type": "status",
-                    **state.status(),
-                }
+                initial = {"type": "status", **state.status()}
                 self.wfile.write(
                     f"data: {json.dumps(initial)}\n\n".encode("utf-8")
                 )
@@ -658,6 +834,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(exc)}, 400)
             return
 
+        if self.path == "/api/modifier-map":
+            try:
+                modifier = data.get("modifier")
+                mode_name = data.get("mode")
+                state.set_modifier_mode(modifier, mode_name)
+                self.send_json(
+                    {
+                        "modifier": modifier,
+                        "mode": state.modifier_modes[modifier],
+                        "modifier_modes": dict(state.modifier_modes),
+                    }
+                )
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, 400)
+            return
+
         self.send_json({"error": "not found"}, 404)
 
 
@@ -673,7 +865,7 @@ def main() -> None:
 
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.timeout = 1.0
-    print(f"KNOBController daemon API: http://{HOST}:{PORT}", flush=True)
+    print(f"KNOBController v0.3 daemon API: http://{HOST}:{PORT}", flush=True)
     while state.running:
         server.handle_request()
     server.server_close()
