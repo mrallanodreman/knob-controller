@@ -32,7 +32,9 @@ jobs:
             knob_engine.py \
             linux_backend.py \
             modifier_input.py \
-            knob_controller_daemon.py 2>&1 | tee compile-output.txt
+            app_context.py \
+            knob_controller_daemon.py \
+            knob-controller-agent.py 2>&1 | tee compile-output.txt
 
       - name: Run unit tests
         id: unit_tests
