@@ -37,9 +37,12 @@ jobs:
             devices/linux_input.py \
             devices/meetion.py \
             devices/generic_hid.py \
+            devices/custom.py \
+            devices/calibration.py \
             devices/registry.py \
             knob_controller_daemon.py \
             knob_controller_daemon_v06.py \
+            knob_controller_daemon_v07.py \
             knob-controller-agent.py 2>&1 | tee compile-output.txt
 
       - name: Run unit tests
