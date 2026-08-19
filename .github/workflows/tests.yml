@@ -31,5 +31,19 @@ jobs:
             knob_controller_daemon.py
 
       - name: Run unit tests
+        id: unit_tests
+        continue-on-error: true
         run: |
-          python -m unittest -v
+          python -m unittest discover -v 2>&1 | tee test-output.txt
+          test ${PIPESTATUS[0]} -eq 0
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: test-output.txt
+
+      - name: Fail job when tests failed
+        if: steps.unit_tests.outcome == 'failure'
+        run: exit 1
