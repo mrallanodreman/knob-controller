@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
 
 from .base import DeviceAdapter, DeviceCandidate
+from .custom import CalibratedAdapter
 from .generic_hid import GenericHIDAdapter
 from .meetion import MeetionAdapter
 
@@ -32,4 +32,4 @@ class DeviceRegistry:
 
 
 def default_registry() -> DeviceRegistry:
-    return DeviceRegistry([MeetionAdapter(), GenericHIDAdapter()])
+    return DeviceRegistry([MeetionAdapter(), CalibratedAdapter(), GenericHIDAdapter()])
