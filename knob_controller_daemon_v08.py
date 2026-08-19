@@ -72,12 +72,12 @@ def save_calibration(name: str | None = None) -> dict:
             product_id=session.product_id,
             left_type=session.captures["left"].ev_type,
             left_code=session.captures["left"].code,
-            left_value=session.captures["left"].value,
             right_type=session.captures["right"].ev_type,
             right_code=session.captures["right"].code,
-            right_value=session.captures["right"].value,
             press_type=session.captures["press"].ev_type,
             press_code=session.captures["press"].code,
+            left_value=session.captures["left"].value,
+            right_value=session.captures["right"].value,
             press_value=session.captures["press"].value,
         )
         upsert_profile(profile)
@@ -91,6 +91,20 @@ def save_calibration(name: str | None = None) -> dict:
 
 
 v07.save_calibration = save_calibration
+_v07_calibration_status = v07.calibration_status
+
+
+def calibration_status_v08() -> dict:
+    data = _v07_calibration_status()
+    data["version"] = "0.8.0"
+    session = v07._session
+    data["runtime_decoder"] = session.decoder_kind if session is not None else "EV_KEY + EV_REL"
+    data["supported_rotation_events"] = ["EV_KEY", "EV_REL"]
+    data["press_event"] = "EV_KEY"
+    return data
+
+
+v07.calibration_status = calibration_status_v08
 
 
 def knob_loop() -> None:
