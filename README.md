@@ -4,122 +4,133 @@
 
 KNOBController is an open-source control layer for rotary inputs. It turns the physical knob on a supported keyboard into a programmable control surface instead of leaving it locked to one manufacturer-defined function.
 
-The current Linux backend is already functional with the tested MEETION keyboard: rotation can control **vertical scrolling** or **system volume**, and the knob press can be remapped to **Mute, Enter, Esc, Tab, Space or Play/Pause**.
+The current Linux implementation is functional with the tested `Evision MEETION Keyboard`. KNOBController can already route the physical knob through a gesture/action engine, change its base behavior between **vertical scroll** and **system volume**, remap single/double/long presses, and use **Ctrl / Shift / Alt modifier layers** for contextual rotary actions.
 
-The product direction is broader: generic rotary-device discovery, application-aware profiles, gesture combinations, creative-tool controls, and native Windows/macOS backends.
-
-## Current status
+## Current release line: v0.3
 
 ### Available now
 
 - Linux backend using `evdev`.
 - Virtual input injection through `/dev/uinput`.
-- Automatic detection of the tested `Evision MEETION Keyboard` knob event interface.
-- Exclusive grab of the physical rotary input while KNOBController is active.
-- Rotate right / left -> vertical scroll.
-- Rotate right / left -> volume up / down.
-- Knob click remapping:
-  - Mute
-  - Enter
-  - Esc
-  - Tab
-  - Space
-  - Play/Pause
-- Persistent configuration in `/etc/knob-controller/config.json`.
+- Automatic detection of the tested MEETION knob event interface.
+- Exclusive grab of the physical rotary node while KNOBController is active.
+- Base knob modes:
+  - Vertical scroll.
+  - System volume.
+- Knob gestures:
+  - Click.
+  - Double click.
+  - Long press.
+- Button remapping:
+  - Mute.
+  - Enter.
+  - Esc.
+  - Tab.
+  - Space.
+  - Play/Pause.
+  - No action.
+- Modifier-aware rotation:
+  - `Ctrl + Knob` -> Zoom by default.
+  - `Shift + Knob` -> Horizontal scroll by default.
+  - `Alt + Knob` -> Tab switching by default.
+- Modifier layers can be changed to:
+  - Inherit base mode.
+  - Vertical scroll.
+  - Horizontal scroll.
+  - Volume.
+  - Zoom.
+  - Tabs.
+- Non-destructive modifier monitoring from sibling MEETION evdev keyboard nodes.
+- Persistent schema-v3 configuration in `/etc/knob-controller/config.json`.
 - Local HTTP API at `127.0.0.1:8766`.
-- Server-Sent Events stream for live knob activity.
+- Server-Sent Events stream for live knob, gesture and modifier activity.
 - Native GTK client.
-- Tauri desktop shell with a hardware-inspired control-surface UI.
-- systemd service files and desktop launchers.
+- Tauri v0.3 desktop shell with a hardware/audio-control-surface interface.
+- Capability-driven UI: controls only show as live when the daemon really supports them.
+- Python unit tests for the engine, backend and modifier layer logic.
 
-### Product roadmap
+## Default control model
 
-The interface already reserves clear space for the next capabilities without presenting them as finished features:
+```text
+BASE
+Knob left/right       -> Scroll or Volume
+Click                 -> Mute
+Double Click          -> No action
+Long Press            -> No action
 
-- Horizontal scroll.
-- Zoom.
-- Tab switching.
-- Timeline scrubbing for video editors.
-- Brush-size control for creative applications.
-- Workspace switching.
-- Double-click gesture.
-- Long-press gesture.
-- `Shift + knob`, `Ctrl + knob`, and `Alt + knob` layers.
-- Per-application profiles.
-- Automatic profile switching by foreground application.
-- Multiple rotary devices.
-- Generic HID discovery.
-- Device adapters instead of a MEETION-only detector.
-- Windows Raw HID / SendInput backend.
-- macOS IOKit / HID backend.
+CTRL LAYER
+Ctrl + Knob           -> Zoom out / in
 
-## Product model
+SHIFT LAYER
+Shift + Knob          -> Horizontal scroll
 
-KNOBController is intentionally not designed as a generic keyboard remapper. The architecture is evolving around one specific concept:
+ALT LAYER
+Alt + Knob            -> Previous / next tab
+```
+
+All three modifier layers are configurable from the desktop UI and through the local API.
+
+## Architecture
+
+```text
+                         ┌────────────────────┐
+                         │   Tauri Desktop    │
+                         │      UI v0.3       │
+                         └─────────┬──────────┘
+                                   │ HTTP + SSE
+                                   │
+MEETION knob evdev ────────────────┼──────────────┐
+                                   │              │
+MEETION keyboard sibling evdev ────┘              │
+        │                                          │
+        │ Ctrl / Shift / Alt state                 │
+        ▼                                          ▼
+┌───────────────────┐                     ┌───────────────────┐
+│   GestureEngine   │ ──────────────────> │   ActionEngine    │
+└───────────────────┘                     └─────────┬─────────┘
+                                                   │
+                                                   ▼
+                                         ┌───────────────────┐
+                                         │ LinuxActionExecutor│
+                                         └─────────┬─────────┘
+                                                   │
+                                      /dev/uinput  │
+                                                   ▼
+                                             Linux desktop
+```
+
+The portable core remains intentionally separate from Linux device code:
 
 ```text
 physical rotary input
         ↓
-device adapter
+device adapter / OS input backend
         ↓
 gesture engine
         ↓
-context / active profile
+profile + modifier layer
         ↓
 action engine
         ↓
-OS backend
+OS execution backend
 ```
 
-This allows the same physical knob to behave differently depending on context.
+## Modifier-aware binding model
 
-Example target behavior:
+Profiles can now distinguish the same rotary gesture by its modifier context.
 
 ```text
-Browser
-  Rotate       -> vertical scroll
-  Ctrl+Rotate  -> zoom
-  Click        -> middle click
-
-Music player
-  Rotate       -> volume
-  Click        -> play/pause
-
-Video editor
-  Rotate       -> timeline scrub
-  Shift+Rotate -> timeline zoom
-
-Image editor
-  Rotate       -> brush size
-  Ctrl+Rotate  -> zoom
-
-IDE
-  Rotate       -> scroll
-  Ctrl+Rotate  -> zoom
-  Alt+Rotate   -> tabs
+rotate_right
+ctrl+rotate_right
+shift+rotate_right
+alt+rotate_right
 ```
 
-## Architecture today
+Resolution always checks the exact modifier binding first and then falls back to the plain gesture. That keeps old configurations usable when a specific layer has not been defined.
 
-```text
-MEETION keyboard knob
-        ↓
-Linux evdev
-        ↓
-knob-controller.py
-        ↓
-┌──────────────────────┐
-│ state + config       │
-│ local HTTP API       │
-│ SSE live events      │
-└──────────────────────┘
-        ↓
-/dev/uinput
-        ↓
-scroll / volume / key action
-```
+## Local API
 
-The Tauri UI talks to the daemon at:
+The Tauri UI talks to:
 
 ```text
 http://127.0.0.1:8766
@@ -129,39 +140,84 @@ Current endpoints:
 
 ```text
 GET  /api/status
+GET  /api/profiles
+GET  /events
+
 POST /api/mode
 POST /api/click-map
-GET  /events
+POST /api/gesture-map
+POST /api/modifier-map
 ```
+
+Example modifier update:
+
+```json
+{
+  "modifier": "shift",
+  "mode": "horizontal_scroll"
+}
+```
+
+The `/api/status` response exposes real runtime capabilities, detected modifier input nodes, active modifiers and the active mapping configuration. The desktop UI uses those values instead of assuming that a feature exists.
+
+## Configuration schema v3
+
+```json
+{
+  "schema_version": 3,
+  "mode": "scroll",
+  "click_key": "mute",
+  "gesture_bindings": {
+    "click": "mute",
+    "double_click": "noop",
+    "long_press": "noop"
+  },
+  "modifier_modes": {
+    "ctrl": "zoom",
+    "shift": "horizontal_scroll",
+    "alt": "tabs"
+  }
+}
+```
+
+Older `click_key` configuration remains supported during migration.
 
 ## UI philosophy
 
-The desktop interface is inspired by physical audio control surfaces rather than generic dashboard UI.
+The desktop interface is inspired by physical audio control surfaces rather than a generic settings dashboard.
 
-The design has two strict rules:
+The rules are strict:
 
-1. **Real functions look active.** Scroll, volume, current click mapping, device status and live activity are wired to the daemon.
-2. **Future functions are visible but explicitly marked as Roadmap / Next.** The interface does not invent firmware, battery, haptics or unsupported device telemetry.
+1. **Real functions look active.**
+2. **Unavailable functions stay disabled or explicitly marked NEXT.**
+3. **No fake battery, firmware, haptics or telemetry.**
+4. **Hardware activity must be visible immediately.**
+5. **The UI is a control surface, not a configuration form.**
 
-This gives contributors a concrete visual target while keeping the current product honest.
+In v0.3 the UI shows live base mode, Click / Double Click / Long Press, modifier-node availability, currently held Ctrl/Shift/Alt keys and the action layer used by each modifier.
 
 ## Repository map
 
 ```text
 .
-├── knob-controller.py                 # Linux daemon + current web control UI
-├── knob-controller-agent.py           # local agent
-├── knob-controller.service            # systemd daemon service
-├── knob-controller-agent.service      # systemd agent service
-├── knob-controller.desktop            # desktop launcher
-├── knob-controller-open.sh            # browser/control launcher
+├── knob_engine.py                      # portable gesture/action/profile engine
+├── linux_backend.py                    # Linux action executor
+├── modifier_input.py                   # Linux Ctrl/Shift/Alt state monitor
+├── knob_controller_daemon.py           # current Linux daemon v0.3
+├── knob-controller.py                  # legacy v0.x implementation
+├── knob-controller-agent.py            # local agent
+├── knob-controller.service             # systemd service definition
+├── knob-controller-agent.service
+├── test_linux_backend.py
+├── test_modifier_layers.py
+├── tests/
+│   └── test_knob_engine.py
 └── native-app/
-    ├── knob-controller-native.py       # native GTK client
-    ├── knob-controller-native.desktop
-    ├── knob-controller-native-open.sh
+    ├── knob-controller-native.py        # GTK client
     └── tauri/
-        ├── ui/index.html               # product desktop UI
-        └── src-tauri/                  # Tauri shell
+        ├── ui/                          # legacy/fallback Tauri UI
+        ├── ui-v2/index.html             # current hardware-control UI
+        └── src-tauri/                   # Tauri application shell
 ```
 
 ## Platform direction
@@ -171,7 +227,11 @@ This gives contributors a concrete visual target while keeping the current produ
 Current production target.
 
 ```text
-evdev -> KNOBController engine -> uinput
+evdev + modifier nodes
+        ↓
+KNOBController engine
+        ↓
+uinput keyboard + pointer
 ```
 
 ### Windows
@@ -179,7 +239,11 @@ evdev -> KNOBController engine -> uinput
 Planned native backend.
 
 ```text
-Raw HID / Windows input APIs -> KNOBController engine -> SendInput
+Raw HID / Windows input APIs
+        ↓
+KNOBController engine
+        ↓
+SendInput
 ```
 
 ### macOS
@@ -187,29 +251,68 @@ Raw HID / Windows input APIs -> KNOBController engine -> SendInput
 Planned native backend.
 
 ```text
-IOKit / HID -> KNOBController engine -> macOS input APIs
+IOKit / HID
+        ↓
+KNOBController engine
+        ↓
+macOS input APIs
 ```
 
-The Linux daemon cannot simply be packaged unchanged for Microsoft Store or Mac App Store because `evdev` and `/dev/uinput` are Linux-specific.
+The Linux daemon cannot simply be repackaged unchanged for Microsoft Store or Mac App Store because `evdev` and `/dev/uinput` are Linux-specific. The portable gesture/action/profile engine is the part intended to be shared.
+
+## Next product milestone: v0.4
+
+The next major feature is **per-application profiles and automatic foreground-app switching**.
+
+Target behavior:
+
+```text
+Browser
+  Knob          -> Scroll
+  Ctrl + Knob   -> Zoom
+  Shift + Knob  -> Horizontal scroll
+  Alt + Knob    -> Tabs
+
+Spotify
+  Knob          -> Volume
+  Click         -> Play / Pause
+
+Premiere / DaVinci
+  Knob          -> Timeline scrub
+  Shift + Knob  -> Fine scrub
+  Ctrl + Knob   -> Timeline zoom
+
+Photoshop / design tools
+  Knob          -> Brush size
+  Ctrl + Knob   -> Zoom
+```
+
+After profiles:
+
+- generic HID discovery;
+- multiple rotary devices;
+- device adapters instead of a MEETION-only detector;
+- packaged Linux installer;
+- Windows backend;
+- macOS backend;
+- versioned GitHub Releases and signed installers.
 
 ## Public-release targets
 
 Before `v1.0.0`, the project should have:
 
-- device-adapter abstraction;
-- first generic HID discovery path;
-- action/gesture model separated from device handling;
-- packaged Linux installer;
-- automated builds in GitHub Actions;
-- versioned GitHub Releases;
-- checksums;
+- generic device-adapter abstraction;
 - supported-device matrix;
+- packaged Linux installer;
+- automated build artifacts;
+- GitHub Releases;
+- checksums;
 - screenshots and demo video/GIF;
 - `CHANGELOG.md`;
 - `CONTRIBUTING.md`;
 - `SECURITY.md`;
 - issue templates;
-- Windows backend milestone defined and tracked.
+- Windows/macOS backend milestones.
 
 ## License
 
