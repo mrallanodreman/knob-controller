@@ -33,7 +33,13 @@ jobs:
             linux_backend.py \
             modifier_input.py \
             app_context.py \
+            devices/base.py \
+            devices/linux_input.py \
+            devices/meetion.py \
+            devices/generic_hid.py \
+            devices/registry.py \
             knob_controller_daemon.py \
+            knob_controller_daemon_v06.py \
             knob-controller-agent.py 2>&1 | tee compile-output.txt
 
       - name: Run unit tests
