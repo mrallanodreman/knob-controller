@@ -2,321 +2,253 @@
 
 **Your keyboard knob. Your rules.**
 
-KNOBController is an open-source control layer for rotary inputs. It turns the physical knob on a supported keyboard into a programmable control surface instead of leaving it locked to one manufacturer-defined function.
+KNOBController is an open-source control layer for physical rotary inputs. It turns a keyboard knob into a programmable control surface instead of leaving it locked to one manufacturer-defined function.
 
-The current Linux implementation is functional with the tested `Evision MEETION Keyboard`. KNOBController can already route the physical knob through a gesture/action engine, change its base behavior between **vertical scroll** and **system volume**, remap single/double/long presses, and use **Ctrl / Shift / Alt modifier layers** for contextual rotary actions.
+The current production target is Linux. The tested MEETION knob can control vertical scroll, horizontal scroll, system volume, zoom, tab switching and configurable button gestures. v0.4 adds automatic per-application profiles on X11.
 
-## Current release line: v0.3
+## What works now
 
-### Available now
+### Rotary control
 
-- Linux backend using `evdev`.
-- Virtual input injection through `/dev/uinput`.
-- Automatic detection of the tested MEETION knob event interface.
-- Exclusive grab of the physical rotary node while KNOBController is active.
-- Base knob modes:
-  - Vertical scroll.
-  - System volume.
-- Knob gestures:
-  - Click.
-  - Double click.
-  - Long press.
-- Button remapping:
-  - Mute.
-  - Enter.
-  - Esc.
-  - Tab.
-  - Space.
-  - Play/Pause.
-  - No action.
-- Modifier-aware rotation:
-  - `Ctrl + Knob` -> Zoom by default.
-  - `Shift + Knob` -> Horizontal scroll by default.
-  - `Alt + Knob` -> Tab switching by default.
-- Modifier layers can be changed to:
-  - Inherit base mode.
-  - Vertical scroll.
-  - Horizontal scroll.
-  - Volume.
-  - Zoom.
-  - Tabs.
-- Non-destructive modifier monitoring from sibling MEETION evdev keyboard nodes.
-- Persistent schema-v3 configuration in `/etc/knob-controller/config.json`.
-- Local HTTP API at `127.0.0.1:8766`.
-- Server-Sent Events stream for live knob, gesture and modifier activity.
-- Native GTK client.
-- Tauri v0.3 desktop shell with a hardware/audio-control-surface interface.
-- Capability-driven UI: controls only show as live when the daemon really supports them.
-- Python unit tests for the engine, backend and modifier layer logic.
+- Rotate left / right → vertical scroll.
+- Rotate left / right → volume.
+- `Ctrl + Knob` → zoom by default.
+- `Shift + Knob` → horizontal scroll by default.
+- `Alt + Knob` → tab switching by default.
+- Modifier layers are configurable.
 
-## Default control model
+### Button gestures
+
+- Click.
+- Double click.
+- Long press.
+- Mappings: Mute, Enter, Esc, Tab, Space, Play/Pause or No-op.
+
+### Per-app profiles — v0.4
+
+An unprivileged desktop profile agent now detects the foreground X11 application and applies the corresponding KNOBController profile automatically.
+
+Starter profiles:
 
 ```text
-BASE
-Knob left/right       -> Scroll or Volume
-Click                 -> Mute
-Double Click          -> No action
-Long Press            -> No action
-
-CTRL LAYER
-Ctrl + Knob           -> Zoom out / in
-
-SHIFT LAYER
-Shift + Knob          -> Horizontal scroll
-
-ALT LAYER
-Alt + Knob            -> Previous / next tab
+Global
+Browser
+Media
+Video Editor
+Design
+IDE
 ```
 
-All three modifier layers are configurable from the desktop UI and through the local API.
+Example behavior:
+
+```text
+Firefox / Chromium
+  Knob          → Scroll
+  Ctrl + Knob   → Zoom
+  Shift + Knob  → Horizontal scroll
+  Alt + Knob    → Tabs
+
+Spotify / VLC / mpv
+  Knob          → Volume
+  Click         → Play / Pause
+  Double Click  → Mute
+
+Video editor
+  Knob          → Scroll / navigation
+  Ctrl + Knob   → Zoom
+  Shift + Knob  → Horizontal navigation
+  Click         → Space
+
+IDE
+  Knob          → Scroll
+  Ctrl + Knob   → Zoom
+  Alt + Knob    → Tabs
+```
+
+Profiles live in:
+
+```text
+~/.config/knob-controller/profiles.json
+```
+
+See [`docs/PROFILES.md`](docs/PROFILES.md).
 
 ## Architecture
 
+KNOBController separates privileged hardware access from desktop context.
+
 ```text
-                         ┌────────────────────┐
-                         │   Tauri Desktop    │
-                         │      UI v0.3       │
-                         └─────────┬──────────┘
-                                   │ HTTP + SSE
-                                   │
-MEETION knob evdev ────────────────┼──────────────┐
-                                   │              │
-MEETION keyboard sibling evdev ────┘              │
-        │                                          │
-        │ Ctrl / Shift / Alt state                 │
-        ▼                                          ▼
-┌───────────────────┐                     ┌───────────────────┐
-│   GestureEngine   │ ──────────────────> │   ActionEngine    │
-└───────────────────┘                     └─────────┬─────────┘
-                                                   │
-                                                   ▼
-                                         ┌───────────────────┐
-                                         │ LinuxActionExecutor│
-                                         └─────────┬─────────┘
-                                                   │
-                                      /dev/uinput  │
-                                                   ▼
-                                             Linux desktop
+                    KNOBController v0.4
+
+Desktop session                         Hardware layer
+────────────────                        ──────────────
+foreground app
+      ↓
+Profile Agent (user)
+      ↓ localhost API
+      ├──────────────────────────────→ Linux daemon
+      │                                  ↓
+      │                              Gesture Engine
+      │                                  ↓
+      │                              Action Engine
+      │                                  ↓
+      │                            LinuxActionExecutor
+      │                                  ↓
+      │                          evdev / /dev/uinput
+      │                                  ↓
+      └──────────────────────────── physical knob
 ```
 
-The portable core remains intentionally separate from Linux device code:
+The product core is still platform-oriented:
 
 ```text
 physical rotary input
         ↓
-device adapter / OS input backend
+device adapter
         ↓
 gesture engine
         ↓
-profile + modifier layer
+context / active profile
         ↓
 action engine
         ↓
-OS execution backend
+OS backend
 ```
 
-## Modifier-aware binding model
+## Local APIs
 
-Profiles can now distinguish the same rotary gesture by its modifier context.
-
-```text
-rotate_right
-ctrl+rotate_right
-shift+rotate_right
-alt+rotate_right
-```
-
-Resolution always checks the exact modifier binding first and then falls back to the plain gesture. That keeps old configurations usable when a specific layer has not been defined.
-
-## Local API
-
-The Tauri UI talks to:
+### Hardware daemon
 
 ```text
 http://127.0.0.1:8766
 ```
 
-Current endpoints:
+Current endpoints include:
 
 ```text
 GET  /api/status
 GET  /api/profiles
-GET  /events
-
 POST /api/mode
 POST /api/click-map
 POST /api/gesture-map
 POST /api/modifier-map
+GET  /events
 ```
 
-Example modifier update:
+### Profile agent
 
-```json
-{
-  "modifier": "shift",
-  "mode": "horizontal_scroll"
-}
+```text
+http://127.0.0.1:8767
 ```
 
-The `/api/status` response exposes real runtime capabilities, detected modifier input nodes, active modifiers and the active mapping configuration. The desktop UI uses those values instead of assuming that a feature exists.
+Read-only runtime endpoints:
 
-## Configuration schema v3
-
-```json
-{
-  "schema_version": 3,
-  "mode": "scroll",
-  "click_key": "mute",
-  "gesture_bindings": {
-    "click": "mute",
-    "double_click": "noop",
-    "long_press": "noop"
-  },
-  "modifier_modes": {
-    "ctrl": "zoom",
-    "shift": "horizontal_scroll",
-    "alt": "tabs"
-  }
-}
+```text
+GET /api/status
+GET /api/profiles
+GET /events
 ```
 
-Older `click_key` configuration remains supported during migration.
+## Linux session support
 
-## UI philosophy
+### X11
 
-The desktop interface is inspired by physical audio control surfaces rather than a generic settings dashboard.
+Automatic foreground-application switching is implemented using the EWMH `_NET_ACTIVE_WINDOW` hint through `xprop`. The profile agent belongs to the user session and does not run as root.
 
-The rules are strict:
+### Wayland
 
-1. **Real functions look active.**
-2. **Unavailable functions stay disabled or explicitly marked NEXT.**
-3. **No fake battery, firmware, haptics or telemetry.**
-4. **Hardware activity must be visible immediately.**
-5. **The UI is a control surface, not a configuration form.**
+Wayland is detected explicitly. Automatic foreground-app switching is not claimed as finished yet because there is no single universal cross-compositor foreground-window API. On Wayland, KNOBController safely falls back to the Global profile.
 
-In v0.3 the UI shows live base mode, Click / Double Click / Long Press, modifier-node availability, currently held Ctrl/Shift/Alt keys and the action layer used by each modifier.
+## Device support
+
+Current tested hardware:
+
+- Evision / MEETION keyboard rotary interface used during development.
+
+The architecture is moving toward device adapters and generic HID discovery. MEETION is the first supported device family, not the intended product boundary.
 
 ## Repository map
 
 ```text
 .
-├── knob_engine.py                      # portable gesture/action/profile engine
-├── linux_backend.py                    # Linux action executor
-├── modifier_input.py                   # Linux Ctrl/Shift/Alt state monitor
-├── knob_controller_daemon.py           # current Linux daemon v0.3
-├── knob-controller.py                  # legacy v0.x implementation
-├── knob-controller-agent.py            # local agent
-├── knob-controller.service             # systemd service definition
-├── knob-controller-agent.service
+├── knob_controller_daemon.py          # v0.3+ Linux hardware daemon
+├── knob_engine.py                     # platform-independent gesture/action engine
+├── linux_backend.py                   # uinput action execution
+├── modifier_input.py                  # Ctrl/Shift/Alt state tracking
+├── app_context.py                     # foreground-app detection + matching
+├── knob-controller-agent.py           # v0.4 unprivileged per-app profile agent
+├── knob-controller.service            # hardware daemon service
+├── knob-controller-agent.service      # systemd user profile-agent service
 ├── test_linux_backend.py
 ├── test_modifier_layers.py
+├── test_app_context.py
 ├── tests/
 │   └── test_knob_engine.py
+├── docs/
+│   └── PROFILES.md
 └── native-app/
-    ├── knob-controller-native.py        # GTK client
     └── tauri/
-        ├── ui/                          # legacy/fallback Tauri UI
-        ├── ui-v2/index.html             # current hardware-control UI
-        └── src-tauri/                   # Tauri application shell
+        ├── ui-v2/                     # hardware-inspired desktop UI
+        └── src-tauri/
 ```
+
+Legacy v0.x files remain in the repository during migration so existing installations are not silently broken.
+
+## Desktop UI
+
+The Tauri interface is intentionally inspired by physical audio control surfaces rather than generic dashboard UI.
+
+Product rule:
+
+1. Real functions look active.
+2. Future functions are visibly marked as Next/Roadmap.
+3. No fake battery, firmware, haptics or device telemetry is presented.
 
 ## Platform direction
 
 ### Linux
 
-Current production target.
-
 ```text
-evdev + modifier nodes
-        ↓
-KNOBController engine
-        ↓
-uinput keyboard + pointer
+evdev → KNOBController engine → uinput
 ```
+
+Current production target.
 
 ### Windows
 
-Planned native backend.
+Planned:
 
 ```text
-Raw HID / Windows input APIs
-        ↓
-KNOBController engine
-        ↓
-SendInput
+Raw Input / HID → KNOBController engine → SendInput / native output backend
 ```
 
 ### macOS
 
-Planned native backend.
+Planned:
 
 ```text
-IOKit / HID
-        ↓
-KNOBController engine
-        ↓
-macOS input APIs
+IOKit / HID → KNOBController engine → macOS input backend
 ```
 
-The Linux daemon cannot simply be repackaged unchanged for Microsoft Store or Mac App Store because `evdev` and `/dev/uinput` are Linux-specific. The portable gesture/action/profile engine is the part intended to be shared.
+The Linux daemon cannot simply be repackaged unchanged for Windows or macOS because evdev and `/dev/uinput` are Linux-specific.
 
-## Next product milestone: v0.4
+## Road to v1.0
 
-The next major feature is **per-application profiles and automatic foreground-app switching**.
+Major remaining milestones:
 
-Target behavior:
-
-```text
-Browser
-  Knob          -> Scroll
-  Ctrl + Knob   -> Zoom
-  Shift + Knob  -> Horizontal scroll
-  Alt + Knob    -> Tabs
-
-Spotify
-  Knob          -> Volume
-  Click         -> Play / Pause
-
-Premiere / DaVinci
-  Knob          -> Timeline scrub
-  Shift + Knob  -> Fine scrub
-  Ctrl + Knob   -> Timeline zoom
-
-Photoshop / design tools
-  Knob          -> Brush size
-  Ctrl + Knob   -> Zoom
-```
-
-After profiles:
-
-- generic HID discovery;
-- multiple rotary devices;
-- device adapters instead of a MEETION-only detector;
-- packaged Linux installer;
-- Windows backend;
-- macOS backend;
-- versioned GitHub Releases and signed installers.
-
-## Public-release targets
-
-Before `v1.0.0`, the project should have:
-
-- generic device-adapter abstraction;
-- supported-device matrix;
-- packaged Linux installer;
-- automated build artifacts;
-- GitHub Releases;
-- checksums;
-- screenshots and demo video/GIF;
-- `CHANGELOG.md`;
-- `CONTRIBUTING.md`;
-- `SECURITY.md`;
-- issue templates;
-- Windows/macOS backend milestones.
+- Generic HID / device-adapter discovery.
+- Wayland foreground-app backends.
+- UI editor for creating and ordering profiles without editing JSON.
+- Packaged Linux installer and clean privilege setup.
+- Automatic builds and versioned GitHub Releases.
+- Supported-device matrix.
+- Windows backend.
+- macOS backend.
+- Screenshots and demo video/GIF.
+- `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md` and issue templates.
 
 ## License
 
-KNOBController is open-source software from Edge Marketing Agency / EMA. See `LICENSE` for the repository license.
+KNOBController is open-source software from Edge Marketing Agency / EMA. See `LICENSE`.
 
-Project: **KNOBController**  
-Product line: **Turn any keyboard knob into a control surface.**
+**KNOBController — Turn any keyboard knob into a control surface.**
