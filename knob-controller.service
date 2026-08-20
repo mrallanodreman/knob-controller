@@ -1,12 +1,18 @@
 [Unit]
 Description=KNOBController rotary device control daemon
-After=graphical.target
+After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/knob-controller
+ExecStart=/usr/bin/knob-controller
 Restart=on-failure
 RestartSec=1
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/etc/knob-controller
 
 [Install]
 WantedBy=multi-user.target
