@@ -1,0 +1,16 @@
+[Unit]
+Description=KNOBController per-application profile agent
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/knob-controller-agent
+Restart=on-failure
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
