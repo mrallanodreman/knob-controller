@@ -41,11 +41,19 @@ jobs:
             devices/custom.py \
             devices/calibration.py \
             devices/registry.py \
+            knob_controller/__init__.py \
+            knob_controller/__main__.py \
+            knob_controller/backends/linux.py \
+            knob_controller/devices/service.py \
+            knob_controller/calibration/service.py \
+            knob_controller/daemon.py \
             knob_controller_daemon.py \
-            knob_controller_daemon_v06.py \
-            knob_controller_daemon_v07.py \
-            knob_controller_daemon_v08.py \
             knob-controller-agent.py 2>&1 | tee compile-output.txt
+
+      - name: Import canonical runtime
+        id: import_runtime
+        continue-on-error: true
+        run: python -c "import knob_controller; import knob_controller.daemon; print(knob_controller.__version__)" 2>&1 | tee import-output.txt
 
       - name: Run unit tests
         id: unit_tests
@@ -62,6 +70,7 @@ jobs:
           name: test-diagnostics
           path: |
             compile-output.txt
+            import-output.txt
             test-output.txt
           if-no-files-found: warn
 
@@ -70,4 +79,5 @@ jobs:
         shell: bash
         run: |
           test "${{ steps.compile.outcome }}" = "success"
+          test "${{ steps.import_runtime.outcome }}" = "success"
           test "${{ steps.unit_tests.outcome }}" = "success"
