@@ -10,11 +10,23 @@ on:
     branches:
       - master
 
+permissions:
+  contents: read
+
 jobs:
   python-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
 
     steps:
+      - name: Runner sanity check
+        shell: bash
+        run: |
+          set -euxo pipefail
+          uname -a
+          id
+          pwd
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -54,7 +66,10 @@ jobs:
       - name: Import canonical runtime
         id: import_runtime
         continue-on-error: true
-        run: python -c "import knob_controller; import knob_controller.daemon; print(knob_controller.__version__)" 2>&1 | tee import-output.txt
+        shell: bash
+        run: |
+          set -o pipefail
+          python -c "import knob_controller; import knob_controller.daemon; print(knob_controller.__version__)" 2>&1 | tee import-output.txt
 
       - name: Run unit tests
         id: unit_tests
@@ -69,7 +84,8 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          bash -n install.sh uninstall.sh packaging/debian/build-integrated-deb.sh
+          set -o pipefail
+          bash -n install.sh uninstall.sh packaging/debian/build-integrated-deb.sh 2>&1 | tee packaging-output.txt
           grep -q '/usr/bin/knob-controller' packaging/systemd/knob-controller.service
           grep -q 'uinput' packaging/udev/70-knob-controller.rules
 
@@ -82,6 +98,7 @@ jobs:
             compile-output.txt
             import-output.txt
             test-output.txt
+            packaging-output.txt
           if-no-files-found: warn
 
       - name: Quality gate
