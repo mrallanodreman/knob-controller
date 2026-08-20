@@ -1,0 +1,5 @@
+# KNOBController does not relax permissions on all /dev/input/event* devices.
+# The production hardware daemon runs as root and opens only the selected input node.
+# This rule only makes /dev/uinput accessible to the local interactive seat for
+# development/future unprivileged backends without exposing arbitrary evdev input.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

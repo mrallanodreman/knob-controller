@@ -5,6 +5,7 @@ on:
     branches:
       - master
       - feature/**
+      - release/**
   pull_request:
     branches:
       - master
@@ -63,6 +64,15 @@ jobs:
           set -o pipefail
           python -m unittest discover -v 2>&1 | tee test-output.txt
 
+      - name: Validate release packaging scripts
+        id: packaging
+        continue-on-error: true
+        shell: bash
+        run: |
+          bash -n install.sh uninstall.sh packaging/debian/build-integrated-deb.sh
+          grep -q '/usr/bin/knob-controller' packaging/systemd/knob-controller.service
+          grep -q 'uinput' packaging/udev/70-knob-controller.rules
+
       - name: Upload diagnostic reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -81,3 +91,4 @@ jobs:
           test "${{ steps.compile.outcome }}" = "success"
           test "${{ steps.import_runtime.outcome }}" = "success"
           test "${{ steps.unit_tests.outcome }}" = "success"
+          test "${{ steps.packaging.outcome }}" = "success"
