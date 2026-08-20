@@ -33,7 +33,7 @@ class CalibrationSessionTests(unittest.TestCase):
         self.assertFalse(s.record(CapturedEvent(1, 114, 0)))
         self.assertTrue(s.armed)
 
-    def test_rel_capture_is_not_runtime_supported_yet(self):
+    def test_rel_capture_with_opposite_directions_is_runtime_supported(self):
         s = CalibrationSession("x", "/dev/input/event9", "Mystery Knob")
         for step, event in (
             ("left", CapturedEvent(2, 8, -1)),
@@ -43,7 +43,7 @@ class CalibrationSessionTests(unittest.TestCase):
             s.arm(step)
             self.assertTrue(s.record(event))
         self.assertTrue(s.complete)
-        self.assertFalse(s.runtime_supported)
+        self.assertTrue(s.runtime_supported)
 
 
 class CustomAdapterTests(unittest.TestCase):

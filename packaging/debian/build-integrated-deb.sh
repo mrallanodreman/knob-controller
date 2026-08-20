@@ -8,12 +8,26 @@ fi
 
 TAURI_DEB="$(readlink -f "$1")"
 OUT_DIR="${2:-dist}"
+OUT_DIR="$(readlink -f "$OUT_DIR")"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$OUT_DIR"
 
-dpkg-deb -R "$TAURI_DEB" "$WORK/pkg"
+# Arch/CachyOS no trae dpkg-deb; se extrae el .deb con ar+tar (formato ar y
+# control/data en tar.gz). La estructura resultante es idéntica a dpkg-deb -R.
+mkdir -p "$WORK/pkg"
+(
+  cd "$WORK/pkg"
+  ar x "$TAURI_DEB"
+  mkdir -p ctrl data
+  tar xzf control.tar.gz -C ctrl
+  tar xzf data.tar.gz -C data
+  # control es DEBIAN/, data es la raíz /
+  mv ctrl DEBIAN
+  mv data/* .
+  rm -f control.tar.gz data.tar.gz debian-binary
+)
 PKG="$WORK/pkg"
 
 install -d -m 0755 \
@@ -98,7 +112,18 @@ EOF
 chmod 0755 "$PKG/DEBIAN/postrm"
 
 VERSION="$(PYTHONPATH="$ROOT_DIR" python3 -c 'import knob_controller; print(knob_controller.__version__)')"
-ARCH="$(dpkg-deb -f "$TAURI_DEB" Architecture)"
+# Architecture desde DEBIAN/control (antes dpkg-deb -f)
+ARCH="$(grep -E '^Architecture:' "$PKG/DEBIAN/control" | awk '{print $2}')"
 OUT="$OUT_DIR/knob-controller_${VERSION}_${ARCH}.deb"
-dpkg-deb --build --root-owner-group "$PKG" "$OUT"
+# Construir .deb con ar+tar: debian-binary + control.tar.gz + data.tar.gz
+mkdir -p "$WORK/build"
+(
+  cd "$WORK/build"
+  echo "2.0" > debian-binary
+  tar czf control.tar.gz --owner=0 --group=0 -C "$PKG" DEBIAN
+  tar czf data.tar.gz --owner=0 --group=0 -C "$PKG" \
+    --exclude=DEBIAN \
+    usr lib etc 2>/dev/null
+  ar rcs "$OUT" debian-binary control.tar.gz data.tar.gz
+)
 echo "$OUT"

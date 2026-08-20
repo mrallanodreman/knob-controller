@@ -3,12 +3,41 @@
   "productName": "KNOBController",
   "version": "0.10.0-rc.1",
   "identifier": "art.edgemarketing.knobcontroller",
-  "build": { "frontendDist": "../ui-v2" },
+  "build": {
+    "frontendDist": "../ui-v2"
+  },
   "app": {
     "windows": [
-      {"label":"main","title":"KNOBController","url":"index.html","width":1440,"height":980,"minWidth":1180,"minHeight":820,"resizable":true},
-      {"label":"profiles","title":"KNOBController · Profile Editor","url":"profiles.html","width":1180,"height":800,"minWidth":920,"minHeight":650,"resizable":true},
-      {"label":"calibration","title":"KNOBController · Device Calibration","url":"calibration.html","width":1180,"height":820,"minWidth":960,"minHeight":700,"resizable":true}
+      {
+        "label": "main",
+        "title": "KNOBController",
+        "url": "index.html",
+        "width": 1440,
+        "height": 980,
+        "minWidth": 1180,
+        "minHeight": 820,
+        "resizable": true
+      },
+      {
+        "label": "profiles",
+        "title": "KNOBController · Profile Editor",
+        "url": "profiles.html",
+        "width": 1180,
+        "height": 800,
+        "minWidth": 920,
+        "minHeight": 650,
+        "resizable": true
+      },
+      {
+        "label": "calibration",
+        "title": "KNOBController · Device Calibration",
+        "url": "calibration.html",
+        "width": 1180,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 700,
+        "resizable": true
+      }
     ]
   },
   "bundle": {
@@ -16,6 +45,13 @@
     "targets": "all",
     "category": "Utility",
     "shortDescription": "Programmable control layer for keyboard knobs",
-    "longDescription": "KNOBController turns supported and calibrated hardware rotary controls into programmable control surfaces with gestures, modifier layers, per-application profiles and EV_KEY/EV_REL device calibration."
+    "longDescription": "KNOBController turns supported and calibrated hardware rotary controls into programmable control surfaces with gestures, modifier layers, per-application profiles and EV_KEY/EV_REL device calibration.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ]
   }
 }
