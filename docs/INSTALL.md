@@ -1,5 +1,22 @@
 # Linux installation
 
+## Release-candidate validation
+
+Before tagging a release candidate, validate the canonical runtime and packaging scripts from a Linux checkout:
+
+```bash
+chmod +x scripts/rc-validate.sh
+./scripts/rc-validate.sh
+```
+
+For a full desktop build, including Tauri bundles:
+
+```bash
+./scripts/rc-validate.sh --full
+```
+
+The normal validation compiles the Python runtime, imports the canonical package, runs unit tests, and checks the packaging scripts. `--full` additionally requires Node/npm and Rust/Cargo and builds the desktop bundles.
+
 ## Recommended: integrated `.deb`
 
 The release workflow produces one Debian package that contains:
